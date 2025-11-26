@@ -75,6 +75,7 @@ public void OnPluginStart()
 	// Event Hooks - https://wiki.alliedmods.net/Events_(SourceMod_Scripting)
 	PrintToServer("[sSPAP] Creating event hooks");
 	HookEvent("player_spawn", Event_PreSpawn, EventHookMode_Pre);
+	HookEvent("player_spawn", Event_PostSpawn, EventHookMode_Post);
 	// TODO: Implement player_use for other games, seemingly doesn't trigger in Portal
 	// TODO: Implement player_shoot for other games, seemingly doesn't trigger in Portal
 	HookEvent("physgun_pickup", Event_Pickup, EventHookMode_Post);
@@ -258,6 +259,26 @@ event.GetString("userid", userid, sizeof(userid));
 ```
 */
 
+// First checks if the current map is a background map, and if so, exits early so no logic is run on it. Then checks if the current map is the expected map, and if not, changes the map to it. This should only be run after checking shouldRun to avoid console spam.
+//
+// @returns Whether the current map is the expected map.
+bool EvaluateMap()
+{
+	char mapName[32];
+	GetCurrentMap(mapName, sizeof(mapName));
+	if (StrContains(mapName, "background") != -1)
+	{
+		PrintToServer("[sSPAP] Not evaluating background map, likely on main menu");
+		return false;
+	}
+	if (!StrEqual(mapName, expectedMapName))
+	{
+		ForceChangeLevel(expectedMapName, "Map does not match map expected by sSPAP");
+		return false;
+	}
+	return true;
+}
+
 // Fires before the client has spawned.
 //
 // @param event The event object.
@@ -271,17 +292,30 @@ public Action Event_PreSpawn(Event event, const char[] name, bool dontBroadcast)
 		return Plugin_Continue;
 	}
 	PrintToServer("[sSPAP] Client is spawning");
-	char mapName[32];
-	GetCurrentMap(mapName, sizeof(mapName));
-	if (StrContains(mapName, "background") != -1)
+	if (!EvaluateMap())
 	{
-		PrintToServer("[sSPAP] Not evaluating background map, likely on main menu");
 		return Plugin_Continue;
 	}
-	if (!StrEqual(mapName, expectedMapName))
+	// TODO: Change map logic while player has yet to spawn
+	// Changing location of info_player_start has no effect on player spawn, change player location in Event_PostSpawn() instead
+	return Plugin_Continue;
+}
+
+public Action Event_PostSpawn(Event event, const char[] name, bool dontBroadcast)
+{
+	if (!shouldRun)
 	{
-		ForceChangeLevel(expectedMapName, "Map does not match map expected by sSPAP");
+		PrintToServer(cannotRunError);
+		return Plugin_Continue;
 	}
+	PrintToServer("[sSPAP] Client spawned");
+	if (!EvaluateMap())
+	{
+		return Plugin_Continue;
+	}
+	// Test of teleporting player, player does not pick up items nor activate triggers located at spawn
+	ServerCommand("ent_fire !player addoutput \"origin -889.87 -2753.50 -191.97\"");
+	// TODO: Figure out how to change player looking direction
 	// TODO: Display notices after player has spawned
 	return Plugin_Continue;
 }
