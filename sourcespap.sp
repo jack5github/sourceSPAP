@@ -1,8 +1,8 @@
 #include <sourcemod>
-#include <json.inc>
-#include <websocket.inc>
+#include <json>
+#include <websocket>
 
-public char thisPluginName[32] = "sourceSPAP";
+public char thisPluginName[11] = "sourceSPAP";
 
 public Plugin myinfo =	 // Variable must be called 'myinfo'
 	{
@@ -16,14 +16,14 @@ public Plugin myinfo =	 // Variable must be called 'myinfo'
 // === Constants ===
 int				clientId = 1;
 
-char			gameFolderName[8];
+char			gameFolderName[7];
 
-char			jsonConfigPath[64]	= "addons\\sourcemod\\configs\\sourcespap.json";
+char			jsonConfigPath[41]	= "addons\\sourcemod\\configs\\sourcespap.json";
 
 // Whether sourceSPAP should be in a functional state or not, set to false if other plugins are loaded.
 bool			shouldRun						= true;
 
-char			cannotRunError[128] = "[sSPAP] sourceSPAP must be the only loaded plugin, move other .smx files in 'addons/sourcemod/plugins/' to 'disabled/' subfolder";
+char			cannotRunError[129] = "[sSPAP] sourceSPAP must be the only loaded plugin, move other .smx files in 'addons/sourcemod/plugins/' to 'disabled/' subfolder";
 
 // === Configuration & Websocket ===
 char			apDomain[32]				= "archipelago.gg";
@@ -35,6 +35,11 @@ char			apSlot[32]					= "";
 char			apPassword[32]			= "";
 
 WebSocket apWebsocket;
+
+// === Game State ===
+
+// The map Archipelago is expecting the client to be on. If the client is not on this map before they spawn, the server will switch to this map. This appears as the map loading twice, but on modern hardware this is negligible.
+char			expectedMapName[32] = "testchmb_a_10";
 
 // API Reference - https://www.sourcemod.net/new-api/
 public void OnPluginStart()
@@ -69,7 +74,7 @@ public void OnPluginStart()
 
 	// Event Hooks - https://wiki.alliedmods.net/Events_(SourceMod_Scripting)
 	PrintToServer("[sSPAP] Creating event hooks");
-	HookEvent("player_spawn", Event_Spawn, EventHookMode_Post);
+	HookEvent("player_spawn", Event_PreSpawn, EventHookMode_Pre);
 	// TODO: Implement player_use for other games, seemingly doesn't trigger in Portal
 	// TODO: Implement player_shoot for other games, seemingly doesn't trigger in Portal
 	HookEvent("physgun_pickup", Event_Pickup, EventHookMode_Post);
@@ -153,7 +158,7 @@ public Action Command_SetPort(int args)
 		PrintToServer("[sSPAP] Archipelago port is %i", apPort);
 		return Plugin_Continue;
 	}
-	apPort = GetCmdArgInt(0);
+	apPort = GetCmdArgInt(1);
 	PrintToServer("[sSPAP] Archipelago port set to %i", apPort);
 	SaveConfig();
 	return Plugin_Continue;
@@ -253,28 +258,37 @@ event.GetString("userid", userid, sizeof(userid));
 ```
 */
 
-// Fires after the client has spawned.
+// Fires before the client has spawned.
 //
 // @param event The event object.
 // @param name The name of the event.
 // @param dontBroadcast If the event's broadcasting is disabled.
-public void Event_Spawn(Event event, const char[] name, bool dontBroadcast)
+public Action Event_PreSpawn(Event event, const char[] name, bool dontBroadcast)
 {
 	if (!shouldRun)
 	{
 		PrintToServer(cannotRunError);
-		return;
+		return Plugin_Continue;
 	}
-	PrintToServer("[sSPAP] Client spawned");
-	// TODO: Display notices
+	PrintToServer("[sSPAP] Client is spawning");
+	char mapName[32];
+	GetCurrentMap(mapName, sizeof(mapName));
+	if (StrContains(mapName, "background") != -1)
+	{
+		PrintToServer("[sSPAP] Not evaluating background map, likely on main menu");
+		return Plugin_Continue;
+	}
+	if (!StrEqual(mapName, expectedMapName))
+	{
+		ForceChangeLevel(expectedMapName, "Map does not match map expected by sSPAP");
+	}
+	// TODO: Display notices after player has spawned
+	return Plugin_Continue;
 }
 
 public void Event_Pickup(Event event, const char[] name, bool dontBroadcast)
 {
-	if (!shouldRun)
-	{
-		return;	 // Do not spam console any more than player spawning
-	}
+	if (!shouldRun) return;	 // Do not spam console any more than player spawning
 	char entindex[64];
 	event.GetString("entindex", entindex, sizeof(entindex));
 	PrintToServer("[sSPAP] Client picked up object '%s'", entindex);
@@ -283,10 +297,7 @@ public void Event_Pickup(Event event, const char[] name, bool dontBroadcast)
 
 public void Event_PortalGroundTouch(Event event, const char[] name, bool dontBroadcast)
 {
-	if (!shouldRun)
-	{
-		return;	 // Do not spam console any more than player spawning
-	}
+	if (!shouldRun) return;	 // Do not spam console any more than player spawning
 	// Ignore event if client is dead, spams otherwise
 	int health = GetClientHealth(clientId);
 	if (health == 0) return;
@@ -297,10 +308,7 @@ public void Event_PortalGroundTouch(Event event, const char[] name, bool dontBro
 
 public void Event_PortalEnterPortal(Event event, const char[] name, bool dontBroadcast)
 {
-	if (!shouldRun)
-	{
-		return;	 // Do not spam console any more than player spawning
-	}
+	if (!shouldRun) return;	 // Do not spam console any more than player spawning
 	// Ignore event if client is dead, spams otherwise
 	int health = GetClientHealth(clientId);
 	if (health == 0) return;
@@ -318,20 +326,14 @@ public void Event_PortalEnterPortal(Event event, const char[] name, bool dontBro
 
 public void Event_PortalCameraDropped(Event event, const char[] name, bool dontBroadcast)
 {
-	if (!shouldRun)
-	{
-		return;	 // Do not spam console any more than player spawning
-	}
+	if (!shouldRun) return;	 // Do not spam console any more than player spawning
 	PrintToServer("[sSPAP] Client detached camera");
 	// TODO: Reward for each camera
 }
 
 public void Event_PortalDinosaurFound(Event event, const char[] name, bool dontBroadcast)
 {
-	if (!shouldRun)
-	{
-		return;	 // Do not spam console any more than player spawning
-	}
+	if (!shouldRun) return;	 // Do not spam console any more than player spawning
 	char id[32];
 	event.GetString("id", id, sizeof(id));
 	PrintToServer("[sSPAP] Client found dinosaur noise '%s'", id);
@@ -341,10 +343,7 @@ public void Event_PortalDinosaurFound(Event event, const char[] name, bool dontB
 // Fires when the client is hurt. This is only intended to be used to fire a DeathLink event to the Archipelago server if the game in question sees very little damage, and the player has enabled getting hurt triggering DeathLink, provided that the event is sent only after a certain amount of time since the last event.
 public void Event_Hurt(Event event, const char[] name, bool dontBroadcast)
 {
-	if (!shouldRun)
-	{
-		return;	 // Do not spam console any more than player spawning
-	}
+	if (!shouldRun) return;	 // Do not spam console any more than player spawning
 	char attacker[32];
 	event.GetString("attacker", attacker, sizeof(attacker));
 	int health = event.GetInt("health");
@@ -355,10 +354,7 @@ public void Event_Hurt(Event event, const char[] name, bool dontBroadcast)
 // Fires when the client dies. This is intended to be used to fire DeathLink events to the Archipelago server. If being hurt also triggers DeathLink, this event uses the same delay system as Event_Hurt().
 public void Event_Dead(Event event, const char[] name, bool dontBroadcast)
 {
-	if (!shouldRun)
-	{
-		return;	 // Do not spam console any more than player spawning
-	}
+	if (!shouldRun) return;	 // Do not spam console any more than player spawning
 	char attacker[32];
 	event.GetString("attacker", attacker, sizeof(attacker));
 	PrintToServer("[sSPAP] Client killed by entity '%s'", attacker);
