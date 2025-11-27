@@ -31,7 +31,7 @@ It is recommended to use **[SourceMod Studio](https://sarrus1.github.io/sourcepa
 
 In addition, sourceSPAP uses **sm-ext-json** and **sm-ext-websocket** as dependencies and requires their `.inc` files to compile. The `.inc` files can be downloaded from their respective GitHub repositories.
 
-To compile sourceSPAP, provided all dependencies are installed, use the following commands as a guide (Note: These commands only work if you are using the Linux version of the game. If using the Windows version, use SourceMod Studio's `./spcomp` in its installed location instead.):
+To compile sourceSPAP on Windows, provided all dependencies are installed, use the following commands as a guide (on Linux, use SourceMod Studio's `./spcomp` in its installed location instead):
 
 ```bash
 # Copy source file to game scripting folder
