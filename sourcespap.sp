@@ -1,5 +1,7 @@
 #include <sourcemod>
 #include <json>
+// <sdkhooks> cannot set up its event listeners in Portal
+// Portal does not support <sdktools_functions> methods
 #include <websocket>
 
 public char thisPluginName[11] = "sourceSPAP";
@@ -20,9 +22,6 @@ char			gameFolderName[7];
 
 char			jsonConfigPath[41]	= "addons\\sourcemod\\configs\\sourcespap.json";
 
-// Whether sourceSPAP should be in a functional state or not, set to false if other plugins are loaded.
-bool			shouldRun						= true;
-
 char			cannotRunError[129] = "[sSPAP] sourceSPAP must be the only loaded plugin, move other .smx files in 'addons/sourcemod/plugins/' to 'disabled/' subfolder";
 
 // === Configuration & Websocket ===
@@ -34,9 +33,18 @@ char			apSlot[32]					= "";
 
 char			apPassword[32]			= "";
 
+// Whether debug mode is enabled, can only be set by manually editing the config.
+bool			debug								= false;
+
 WebSocket apWebsocket;
 
 // === Game State ===
+
+// Whether sourceSPAP should be in a functional state or not, set to false if other plugins are loaded.
+bool			shouldRun						= true;
+
+// Whether sourceSPAP should be checking for the existence of weapons and deleting them, only true a short amount of time after the player has spawned.
+bool			shouldKillWeapons		= false;
 
 // The map Archipelago is expecting the client to be on. If the client is not on this map before they spawn, the server will switch to this map. This appears as the map loading twice, but on modern hardware this is negligible.
 char			expectedMapName[32] = "testchmb_a_10";
@@ -52,9 +60,22 @@ public void OnPluginStart()
 		JSONObject jsonConfig = JSONObject.FromFile(jsonConfigPath);
 		if (jsonConfig != null)
 		{
-			jsonConfig.GetString("domain", apDomain, sizeof(apDomain));
-			apPort = jsonConfig.GetInt("port");
-			jsonConfig.GetString("slot", apSlot, sizeof(apSlot));
+			if (jsonConfig.HasKey("domain"))
+			{
+				jsonConfig.GetString("domain", apDomain, sizeof(apDomain));
+			}
+			if (jsonConfig.HasKey("port"))
+			{
+				apPort = jsonConfig.GetInt("port");
+			}
+			if (jsonConfig.HasKey("slot"))
+			{
+				jsonConfig.GetString("slot", apSlot, sizeof(apSlot));
+			}
+			if (jsonConfig.HasKey("debug"))
+			{
+				debug = jsonConfig.GetBool("debug");
+			}
 			// Password is not stored in the config for security reasons
 		}
 		else {
@@ -71,6 +92,10 @@ public void OnPluginStart()
 	RegServerCmd("sspap_pwd", Command_SetPassword, "Get/set password of the Archipelago player");
 	RegServerCmd("sspap_connect", Command_Connect, "Connect to the Archipelago server");
 	RegServerCmd("sspap_disconnect", Command_Disconnect, "Disconnect from the Archipelago server");
+	if (debug)
+	{
+		RegServerCmd("sspap_debug_entdump", Command_DumpEntities, "Dump all entities to the console");
+	}
 
 	// Event Hooks - https://wiki.alliedmods.net/Events_(SourceMod_Scripting)
 	PrintToServer("[sSPAP] Creating event hooks");
@@ -110,8 +135,7 @@ public void OnAllPluginsLoaded()
 }
 
 /*
-=== Commands ===
-https://wiki.alliedmods.net/Commands_(SourceMod_Scripting)
+=== Utility Functions ===
 */
 
 // Saves the Archipelago server configuration to a JSON file.
@@ -121,6 +145,7 @@ void SaveConfig()
 	jsonConfig.SetString("domain", apDomain);
 	jsonConfig.SetInt("port", apPort);
 	jsonConfig.SetString("slot", apSlot);
+	jsonConfig.SetBool("debug", debug);
 	// Password is not stored in the config for security reasons
 	if (jsonConfig.ToFile(jsonConfigPath))
 	{
@@ -135,6 +160,29 @@ void SaveConfig()
 	}
 	CloseHandle(jsonConfig);
 }
+
+// Returns an array of indices for all valid entities. IsValidEntity() effectively gives the same output as that from IsValidEdict().
+//
+// @returns The array of entity indices. This handle must be closed when no longer needed.
+ArrayList GetEntityIndices()
+{
+	// No need to multiply by 2, singleplayer games have no networked entities
+	int				maxEntities = GetMaxEntities();
+	ArrayList indices			= new ArrayList();
+	for (int i = 0; i < maxEntities; i++)
+	{
+		if (IsValidEntity(i))
+		{
+			indices.Push(i);
+		}
+	}
+	return indices;
+}
+
+/*
+=== Commands ===
+https://wiki.alliedmods.net/Commands_(SourceMod_Scripting)
+*/
 
 // Sets the domain of the Archipelago server.
 //
@@ -221,6 +269,20 @@ public Action Command_Disconnect(int args)
 	return Plugin_Handled;
 }
 
+// Dumps all entity indices and their classnames to the server console.
+public Action Command_DumpEntities(int args)
+{
+	ArrayList entities = GetEntityIndices();
+	for (int i = 0; i < entities.Length; i++)
+	{
+		char classname[32];
+		GetEntityClassname(entities.Get(i), classname, sizeof(classname));
+		PrintToServer("[sSPAP] Entity %i (classname '%s')", entities.Get(i), classname);
+	}
+	entities.Close();
+	return Plugin_Continue;
+}
+
 /*
 === Websocket Callbacks ===
 https://github.com/ProjectSky/sm-ext-websocket
@@ -279,6 +341,15 @@ bool EvaluateMap()
 	return true;
 }
 
+// Teleports all entities with the specified name to the specified position. Can teleport the player if the name is '!player'.
+//
+// @param name The name of the entity.
+// @param position The position to teleport to as a vector.
+void TeleportEntitiesByName(char[] name, float position[3])
+{
+	ServerCommand("ent_fire %s addoutput \"origin %f %f %f\"", name, position[0], position[1], position[2]);
+}
+
 // Fires before the client has spawned.
 //
 // @param event The event object.
@@ -314,10 +385,30 @@ public Action Event_PostSpawn(Event event, const char[] name, bool dontBroadcast
 		return Plugin_Continue;
 	}
 	// Test of teleporting player, player does not pick up items nor activate triggers located at spawn
-	ServerCommand("ent_fire !player addoutput \"origin -889.87 -2753.50 -191.97\"");
+	TeleportEntitiesByName("!player", { -889.87, -2753.50, -191.97 });
+	shouldKillWeapons = true;
 	// TODO: Figure out how to change player looking direction
 	// TODO: Display notices after player has spawned
 	return Plugin_Continue;
+}
+
+// Run once per game tick (66 times per second). This function should be used as sparingly as possible due to how costly it is. Right now, this function is used to kill weapons, as they do not exist right when the player spawns, and <sdkhooks> and <sdktools_functions> are not supported in Portal.
+public void OnGameFrame()
+{
+	if (!shouldKillWeapons) return;
+	ArrayList entities = GetEntityIndices();
+	for (int i = 0; i < entities.Length; i++)
+	{
+		char classname[32];
+		GetEntityClassname(entities.Get(i), classname, sizeof(classname));
+		if (StrContains(classname, "weapon_") != -1)
+		{
+			RemoveEntity(entities.Get(i));
+			// TODO: Make this more generic, currently assumes only one weapon exists (portal gun)
+			shouldKillWeapons = false;
+		}
+	}
+	entities.Close();
 }
 
 public void Event_Pickup(Event event, const char[] name, bool dontBroadcast)
