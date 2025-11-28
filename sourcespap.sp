@@ -252,12 +252,18 @@ public Action Command_Connect(int args)
 		PrintToServer(cannotRunError);
 		return Plugin_Continue;
 	}
-	apWebsocket = new WebSocket(apDomain, WebSocket_JSON);
+	char apWsDomain[64] = "ws://";
+	StrCat(apWsDomain, sizeof(apWsDomain), apDomain);
+	StrCat(apWsDomain, sizeof(apWsDomain), ":");
+	char apWsPort[6];
+	Format(apWsPort, sizeof(apWsPort), "%i", apPort);
+	StrCat(apWsDomain, sizeof(apWsDomain), apWsPort);
+	PrintToServer("[sSPAP] Connecting to Archipelago server at '%s'", apWsDomain);
+	apWebsocket = new WebSocket(apWsDomain, WebSocket_JSON);
 	apWebsocket.SetOpenCallback(Websocket_Open);
 	apWebsocket.SetCloseCallback(Websocket_Close);
 	apWebsocket.SetErrorCallback(Websocket_Error);
 	apWebsocket.SetMessageCallback(Websocket_Message);
-	PrintToServer("[sSPAP] Connecting to Archipelago server...");
 	apWebsocket.Connect();
 	return Plugin_Handled;
 }
@@ -307,6 +313,12 @@ void Websocket_Error(WebSocket ws, char[] errMsg)
 void Websocket_Message(WebSocket ws, JSON message, int wireSize)
 {
 	// TODO: Interpret message from Archipelago server
+	if (debug)
+	{
+		char messageString[1024];
+		message.ToString(messageString, sizeof(messageString));
+		PrintToServer("[sSPAP] Received message from Archipelago server: %s", messageString);
+	}
 }
 
 /*
