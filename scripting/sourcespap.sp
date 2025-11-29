@@ -55,6 +55,9 @@ bool			shouldRun						= true;
 // Whether sourceSPAP should be checking for the existence of weapons and deleting them, only true a short amount of time after the player has spawned.
 bool			shouldKillWeapons		= false;
 
+// The number of game frames since the player has spawned. Used to determine during what time to kill weapons.
+int				killWeaponsFrames		= 0;
+
 // The map Archipelago is expecting the client to be on. If the client is not on this map before they spawn, the server will switch to this map. This appears as the map loading twice, but on modern hardware this is negligible.
 char			expectedMapName[32] = "testchmb_a_10";
 
@@ -334,6 +337,7 @@ public Action Command_DumpEntities(int args)
 /*
 === Websocket Callbacks ===
 https://github.com/ProjectSky/sm-ext-websocket
+https://github.com/ArchipelagoMW/Archipelago/blob/main/docs/network%20protocol.md
 */
 
 void Websocket_Open(WebSocket ws)
@@ -504,7 +508,7 @@ void Websocket_Message(WebSocket ws, const JSONArray message, int wireSize)
 	}
 }
 
-// Sends the Connect command to the Archipelago server, documented here: https://github.com/ArchipelagoMW/Archipelago/blob/main/docs/network%20protocol.md#connect
+// Sends the Connect command to the Archipelago server, which performs a connection handshake, documented here: https://github.com/ArchipelagoMW/Archipelago/blob/main/docs/network%20protocol.md#connect
 //
 // @param ws The WebSocket connection to the Archipelago server.
 // @param passwordRequired Whether the Archipelago server requires a password.
@@ -557,6 +561,33 @@ void SendConnectCommand(WebSocket ws, bool passwordRequired)
 	commandArray.Close();
 }
 
+// Sends the LocationChecks command to the Archipelago server with a single location, which informs the server that the client has checked it, documented here: https://github.com/ArchipelagoMW/Archipelago/blob/main/docs/network%20protocol.md#locationchecks
+//
+// @param ws The WebSocket connection to the Archipelago server.
+// @param locationId The ID of the location the client has checked.
+void SendLocationCheckedCommand(WebSocket ws, int locationId)
+{
+	// TODO: Do not spam send the location if it has already been checked
+	PrintToServer("[sSPAP] Marking location %i as checked", locationId);
+	JSONObject locationChecksCommand = new JSONObject();
+	locationChecksCommand.SetString("cmd", "LocationChecks");
+	JSONArray locationsArray = new JSONArray();
+	locationsArray.PushInt(locationId);
+	locationChecksCommand.Set("locations", locationsArray);
+	JSONArray commandArray = new JSONArray();
+	commandArray.Push(locationChecksCommand);
+	if (debug)
+	{
+		char commandArrayString[1024];
+		commandArray.ToString(commandArrayString, sizeof(commandArrayString));
+		PrintToServer("[sSPAP] Sending JSON '%s'", commandArrayString);
+	}
+	ws.WriteJSON(commandArray);
+	locationsArray.Close();
+	locationChecksCommand.Close();
+	commandArray.Close();
+}
+
 /*
 === Events ===
 https://wiki.alliedmods.net/Events_(SourceMod_Scripting)
@@ -583,6 +614,7 @@ bool EvaluateMap(bool changeMap = false)
 		return false;
 	}
 	// TODO: Manage maps as unlocks
+	/*
 	if (!StrEqual(mapName, expectedMapName))
 	{
 		PrintToServer("[sSPAP] Map does not match map expected by sSPAP");
@@ -590,6 +622,7 @@ bool EvaluateMap(bool changeMap = false)
 		ForceChangeLevel(expectedMapName, "Map does not match map expected by sSPAP");
 		return false;
 	}
+	*/
 	return true;
 }
 
@@ -637,8 +670,14 @@ public Action Event_PostSpawn(Event event, const char[] name, bool dontBroadcast
 		return Plugin_Continue;
 	}
 	// Test of teleporting player, player does not pick up items nor activate triggers located at spawn
-	TeleportEntitiesByName("!player", { -889.87, -2753.50, -191.97 });
+	char mapName[32];
+	GetCurrentMap(mapName, sizeof(mapName));
+	if (StrEqual(mapName, expectedMapName))
+	{
+		TeleportEntitiesByName("!player", { -889.87, -2753.50, -191.97 });
+	}
 	shouldKillWeapons = true;
+	killWeaponsFrames = 0;
 	// TODO: Figure out how to change player looking direction
 	// TODO: Display notices after player has spawned
 	return Plugin_Continue;
@@ -653,14 +692,17 @@ public void OnGameFrame()
 	{
 		char classname[32];
 		GetEntityClassname(entities.Get(i), classname, sizeof(classname));
-		if (StrContains(classname, "weapon_") != -1)
+		if (StrContains(classname, "weapon_") == 0)
 		{
 			RemoveEntity(entities.Get(i));
-			// TODO: Make this more generic, currently assumes only one weapon exists (portal gun)
-			shouldKillWeapons = false;
 		}
 	}
 	entities.Close();
+	killWeaponsFrames++;
+	if (killWeaponsFrames >= 66)	// 1 second
+	{
+		shouldKillWeapons = false;
+	}
 }
 
 public void Event_Pickup(Event event, const char[] name, bool dontBroadcast)
@@ -708,13 +750,20 @@ public void Event_PortalCameraDropped(Event event, const char[] name, bool dontB
 	// TODO: Reward for each camera
 }
 
+// Fires when the client takes a radio to a "dinosaur" noise location. The ID of the dinosaur noises start from 0 and increment by 1 for every radio, in chamber order. An offset ID is sent as a location check.
+//
+// @param event The event object.
+// @param name The name of the event.
+// @param dontBroadcast If true, the event will not be broadcast to other clients.
 public void Event_PortalDinosaurFound(Event event, const char[] name, bool dontBroadcast)
 {
 	if (!shouldRun) return;	 // Do not spam console any more than player spawning
-	char id[32];
-	event.GetString("id", id, sizeof(id));
-	PrintToServer("[sSPAP] Client found dinosaur noise '%s'", id);
-	// TODO: Reward for each dinosaur
+	char idStr[3];
+	event.GetString("id", idStr, sizeof(idStr));
+	int id	 = StringToInt(idStr);
+	int apId = 85200 + id;	// Reference to radio reading "85.2 FM"
+	PrintToServer("[sSPAP] Client found dinosaur noise %i (%i)", id, apId);
+	SendLocationCheckedCommand(apWebsocket, apId);
 }
 
 // Fires when the client is hurt. This is only intended to be used to fire a DeathLink event to the Archipelago server if the game in question sees very little damage, and the player has enabled getting hurt triggering DeathLink, provided that the event is sent only after a certain amount of time since the last event.
