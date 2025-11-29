@@ -16,54 +16,43 @@ public Plugin myinfo =	 // Variable must be called 'myinfo'
 	};
 
 // === Constants ===
-int				clientId		 = 1;
-
 // Maximum size of a supported Source Engine game name, increase this and the below variables' sizes if needed
 // Strings must contain 1 extra character to be terminated
 int				gameNameSize = 7;
-
 char			gameFolderName[7];
-
 char			gameName[7];
-
 char			jsonConfigPath[41]	= "addons\\sourcemod\\configs\\sourcespap.json";
-
 char			cannotRunError[129] = "[sSPAP] sourceSPAP must be the only loaded plugin, move other .smx files in 'addons/sourcemod/plugins/' to 'disabled/' subfolder";
 
 // === Configuration & Websocket ===
-
 char			apProtocol[4]				= "ws";
-
 char			apDomain[32]				= "archipelago.gg";
-
 int				apPort							= 0;
-
 char			apSlot[32]					= "";
-
 char			apPassword[32]			= "";
-
 // Whether debug mode is enabled, can only be set by manually editing the config.
 bool			debug								= false;
-
 WebSocket apWebsocket;
+int				apSlotNo;
 
 // === Game State ===
-
 // Whether sourceSPAP should be in a functional state or not, set to false if other plugins are loaded.
-bool			shouldRun						= true;
-
+bool			shouldRun					= true;
 // Whether sourceSPAP should be checking for the existence of weapons and deleting them, only true a short amount of time after the player has spawned.
-bool			shouldKillWeapons		= false;
-
+bool			shouldKillWeapons = false;
 // The number of game frames since the player has spawned. Used to determine during what time to kill weapons.
-int				killWeaponsFrames		= 0;
-
+int				killWeaponsFrames = 0;
+ArrayList checkedLocations;
+ArrayList unlockedItems;
 // The map Archipelago is expecting the client to be on. If the client is not on this map before they spawn, the server will switch to this map. This appears as the map loading twice, but on modern hardware this is negligible.
 char			expectedMapName[32] = "testchmb_a_10";
 
 // API Reference - https://www.sourcemod.net/new-api/
 public void OnPluginStart()
 {
+	checkedLocations = new ArrayList();
+	unlockedItems		 = new ArrayList();
+
 	PrintToServer("[sSPAP] Fetching game names");
 	GetGameFolderName(gameFolderName, sizeof(gameFolderName));
 	if (StrEqual(gameFolderName, "portal"))
@@ -121,6 +110,8 @@ public void OnPluginStart()
 	if (debug)
 	{
 		RegServerCmd("sspap_debug_entdump", Command_DumpEntities, "Dump all entities to the console");
+		RegServerCmd("sspap_debug_itemdump", Command_DumpItems, "Dump all unlocked items to the console");
+		RegServerCmd("sspap_debug_locdump", Command_DumpLocations, "Dump all checked locations to the console");
 	}
 
 	// Event Hooks - https://wiki.alliedmods.net/Events_(SourceMod_Scripting)
@@ -321,6 +312,8 @@ public Action Command_Disconnect(int args)
 }
 
 // Dumps all entity indices and their classnames to the server console.
+//
+// @param args The number of arguments.
 public Action Command_DumpEntities(int args)
 {
 	ArrayList entities = GetEntityIndices();
@@ -331,6 +324,24 @@ public Action Command_DumpEntities(int args)
 		PrintToServer("[sSPAP] Entity %i (classname '%s')", entities.Get(i), classname);
 	}
 	entities.Close();
+	return Plugin_Continue;
+}
+
+public Action Command_DumpItems(int args)
+{
+	for (int i = 0; i < unlockedItems.Length; i++)
+	{
+		PrintToServer("[sSPAP] You have item %i", unlockedItems.Get(i));
+	}
+	return Plugin_Continue;
+}
+
+public Action Command_DumpLocations(int args)
+{
+	for (int i = 0; i < checkedLocations.Length; i++)
+	{
+		PrintToServer("[sSPAP] You checked location %i", checkedLocations.Get(i));
+	}
 	return Plugin_Continue;
 }
 
@@ -420,9 +431,9 @@ ArrayList GetJSONStringArray(JSON rootJson, char[] pointer, int pointerSize, int
 // @param wireSize The size of the message.
 void Websocket_Message(WebSocket ws, const JSONArray message, int wireSize)
 {
+	char messageString[1024];
 	if (debug)
 	{
-		char messageString[1024];
 		message.ToString(messageString, sizeof(messageString));
 		PrintToServer("[sSPAP] Received packet from Archipelago server: '%s'", messageString);
 	}
@@ -477,8 +488,35 @@ void Websocket_Message(WebSocket ws, const JSONArray message, int wireSize)
 		}
 		else if (StrEqual(cmd, "Connected")) {
 			PrintToServer("[sSPAP] Connected to Archipelago server");
-			// TODO: Extract information from connected message
+			apSlotNo = command.GetInt("slot");
+			checkedLocations.Clear();
+			JSONArray jsonCheckedLocations = command.Get("checked_locations");
+			for (int j = 0; j < jsonCheckedLocations.Length; j++)
+			{
+				checkedLocations.Push(jsonCheckedLocations.GetInt(j));
+			}
+			jsonCheckedLocations.Close();
 			shouldRun = true;
+		}
+		else if (StrEqual(cmd, "ReceivedItems")) {
+			JSONArray receivedItems = command.Get("items");
+			for (int j = 0; j < receivedItems.Length; j++)
+			{
+				JSONObject receivedItem = receivedItems.Get(j);
+				if (receivedItem.GetInt("player") != apSlotNo)
+				{
+					continue;
+				}
+				int itemId = receivedItem.GetInt("item");
+				receivedItem.Close();
+				// TODO: Handle filler items differently
+				unlockedItems.Push(itemId);
+				if (debug)
+				{
+					PrintToServer("[sSPAP] Received item %i", itemId);
+				}
+			}
+			receivedItems.Close();
 		}
 		else if (StrEqual(cmd, "PrintJSON")) {
 			char pointer[15];
@@ -502,7 +540,8 @@ void Websocket_Message(WebSocket ws, const JSONArray message, int wireSize)
 		else
 		{
 			// TODO: Implement other commands
-			PrintToServer("[sSPAP] ERROR: Command '%s' not implemented", cmd);
+			message.ToString(messageString, sizeof(messageString));
+			PrintToServer("[sSPAP] ERROR: Command '%s' not implemented: %s", cmd, messageString);
 		}
 		command.Close();
 	}
@@ -567,7 +606,17 @@ void SendConnectCommand(WebSocket ws, bool passwordRequired)
 // @param locationId The ID of the location the client has checked.
 void SendLocationCheckedCommand(WebSocket ws, int locationId)
 {
-	// TODO: Do not spam send the location if it has already been checked
+	for (int i = 0; i < checkedLocations.Length; i++)
+	{
+		if (checkedLocations.Get(i) == locationId)
+		{
+			if (debug)
+			{
+				PrintToServer("[sSPAP] Location %i already checked, not sending", locationId);
+			}
+			return;
+		}
+	}
 	PrintToServer("[sSPAP] Marking location %i as checked", locationId);
 	JSONObject locationChecksCommand = new JSONObject();
 	locationChecksCommand.SetString("cmd", "LocationChecks");
@@ -599,6 +648,22 @@ char userid[32];
 event.GetString("userid", userid, sizeof(userid));
 ```
 */
+
+// Returns the client ID of the current client, as it is not always 1.
+//
+// @returns The client ID of the current client.
+int GetClientId()
+{
+	for (int i = 1; i <= MaxClients; i++)
+	{
+		if (IsClientInGame(i))
+		{
+			return i;
+		}
+	}
+	PrintToServer("[sSPAP] ERROR: Could not find client ID");
+	return 0;
+}
 
 // First checks if the current map is a background map, and if so, exits early so no logic is run on it. Then checks if the current map is the expected map, and if not, optionally changes the map to it. This should only be run after checking shouldRun to avoid console spam.
 //
@@ -718,7 +783,7 @@ public void Event_PortalGroundTouch(Event event, const char[] name, bool dontBro
 {
 	if (!shouldRun) return;	 // Do not spam console any more than player spawning
 	// Ignore event if client is dead, spams otherwise
-	int health = GetClientHealth(clientId);
+	int health = GetClientHealth(GetClientId());
 	if (health == 0) return;
 	// Player is alive
 	PrintToServer("[sSPAP] Client touched the ground");
@@ -729,7 +794,7 @@ public void Event_PortalEnterPortal(Event event, const char[] name, bool dontBro
 {
 	if (!shouldRun) return;	 // Do not spam console any more than player spawning
 	// Ignore event if client is dead, spams otherwise
-	int health = GetClientHealth(clientId);
+	int health = GetClientHealth(GetClientId());
 	if (health == 0) return;
 	// Player is alive
 	bool portal2 = event.GetBool("portal2");
