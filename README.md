@@ -2,7 +2,7 @@
 
 > source™ Single Player Archipelago Plugin
 
-**WARNING: sourceSPAP is in early alpha development and is not currently functional. Any and all programming help is appreciated.**
+**WARNING: sourceSPAP is in early alpha development and is not currently functional. [Any and all programming help is appreciated](https://github.com/jack5github/sourceSPAP/blob/master/docs/TODO.md).**
 
 **sourceSPAP** is a SourceMod plugin for singleplayer games made with the Half-Life 2 engine, designed to facilitate the randomisation of said games through the use of [Archipelago](https://archipelago.gg/). It runs directly within games as an always-on listen server, maintaining a connection to an Archipelago server and modifying the game state accordingly.
 
@@ -35,7 +35,7 @@ To compile sourceSPAP on Windows, provided all dependencies are installed, use t
 
 ```bash
 # Copy source file to game scripting folder
-cp sourcespap.sp /.../steam/steamapps/common/<GAME_NAME>/<GAME_FOLDER>/addons/sourcemod/scripting/
+cp ./scripting/sourcespap.sp /.../steam/steamapps/common/<GAME_NAME>/<GAME_FOLDER>/addons/sourcemod/scripting/
 # Move to game scripting folder
 cd /.../steam/steamapps/common/<GAME_NAME>/<GAME_FOLDER>/addons/sourcemod/scripting/
 # Compile with spcomp to plugins folder
