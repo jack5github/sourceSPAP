@@ -119,7 +119,7 @@ public void OnPluginStart()
 	// TODO: Implement player_shoot for other games, seemingly doesn't trigger in Portal
 	HookEvent("physgun_pickup", Event_Pickup, EventHookMode_Post);
 	HookEvent("player_hurt", Event_Hurt, EventHookMode_Post);
-	HookEvent("player_death", Event_Dead, EventHookMode_Post);
+	// TODO: Implement player_death, seemingly doesn't trigger in Portal
 	if (StrEqual(gameFolderName, "portal"))
 	{
 		HookEvent("portal_player_touchedground", Event_PortalGroundTouch, EventHookMode_Post);
@@ -677,6 +677,30 @@ void SendLocationCheckedCommand(WebSocket ws, int locationId)
 	commandArray.Close();
 }
 
+// Sends the DeathLink command to the Archipelago server, which kills all other users, documented here: https://github.com/ArchipelagoMW/Archipelago/blob/main/docs/network%20protocol.md#deathlink
+//
+// @param cause The cause of death.
+void SendDeathLinkCommand(char[] cause)
+{
+	PrintToServer("[sSPAP] Sending DeathLink command due to '%s'", cause);
+	JSONObject deathLinkCommand = new JSONObject();
+	deathLinkCommand.SetString("cmd", "DeathLink");
+	deathLinkCommand.SetInt("time", GetTime());
+	deathLinkCommand.SetString("cause", cause);
+	deathLinkCommand.SetString("source", apSlot);
+	JSONArray commandArray = new JSONArray();
+	commandArray.Push(deathLinkCommand);
+	if (debug)
+	{
+		char commandArrayString[1024];
+		commandArray.ToString(commandArrayString, sizeof(commandArrayString));
+		PrintToServer("[sSPAP] Sending JSON '%s'", commandArrayString);
+	}
+	apWebsocket.WriteJSON(commandArray);
+	deathLinkCommand.Close();
+	commandArray.Close();
+}
+
 /*
 === Events ===
 https://wiki.alliedmods.net/Events_(SourceMod_Scripting)
@@ -701,7 +725,7 @@ int GetClientId()
 			return i;
 		}
 	}
-	// TODO: Fix this failing even when searching through all possible clients
+	// TODO: Fix this failing even when searching through all possible clients, this seems to have something to do with the map changing or reloading without the server's involvement
 	PrintToServer("[sSPAP] ERROR: Could not find client ID");
 	return 0;
 }
@@ -872,7 +896,11 @@ public void Event_PortalDinosaurFound(Event event, const char[] name, bool dontB
 	SendLocationCheckedCommand(apWebsocket, apId);
 }
 
-// Fires when the client is hurt. This is only intended to be used to fire a DeathLink event to the Archipelago server if the game in question sees very little damage, and the player has enabled getting hurt triggering DeathLink, provided that the event is sent only after a certain amount of time since the last event.
+// Fires when the client is hurt. This is only intended to be used to fire a DeathLink event to the Archipelago server if the game in question sees very little damage, and the player has enabled getting hurt triggering DeathLink, provided that the event is sent only after a certain amount of time since the last event. If the client has 0 health, they are dead.
+//
+// @param event The event object.
+// @param name The name of the event.
+// @param dontBroadcast If true, the event will not be broadcast to other clients.
 public void Event_Hurt(Event event, const char[] name, bool dontBroadcast)
 {
 	if (!shouldRun) return;	 // Do not spam console any more than player spawning
@@ -881,15 +909,74 @@ public void Event_Hurt(Event event, const char[] name, bool dontBroadcast)
 	int health = event.GetInt("health");
 	PrintToServer("[sSPAP] Client hurt by entity '%s', %i health remaining", attacker, health);
 	// TODO: Send DeathLink conditionally
-}
-
-// TODO: Fix this function not firing when the client dies
-// Fires when the client dies. This is intended to be used to fire DeathLink events to the Archipelago server. If being hurt also triggers DeathLink, this event uses the same delay system as Event_Hurt().
-public void Event_Dead(Event event, const char[] name, bool dontBroadcast)
-{
-	if (!shouldRun) return;	 // Do not spam console any more than player spawning
-	char attacker[32];
-	event.GetString("attacker", attacker, sizeof(attacker));
+	if (health > 0)
+	{
+		return;
+	}
 	PrintToServer("[sSPAP] Client killed by entity '%s'", attacker);
-	// TODO: Send DeathLink conditionally
+	// TEMP: Gives location checks if the client dies on specific maps
+	if (StrEqual(gameFolderName, "portal"))
+	{
+		char mapName[32];
+		GetCurrentMap(mapName, sizeof(mapName));
+		if (StrEqual(mapName, "testchmb_a_03") && checkedLocations.FindValue(66040) == -1)
+		{
+			SendLocationCheckedCommand(apWebsocket, 66040);
+		}
+		else if (StrEqual(mapName, "testchmb_a_04") && checkedLocations.FindValue(66050) == -1) {
+			SendLocationCheckedCommand(apWebsocket, 66050);
+		}
+		else if (StrEqual(mapName, "testchmb_a_07") && checkedLocations.FindValue(66080) == -1) {
+			SendLocationCheckedCommand(apWebsocket, 66080);
+		}
+		else if (StrEqual(mapName, "testchmb_a_08") && checkedLocations.FindValue(66090) == -1) {
+			SendLocationCheckedCommand(apWebsocket, 66090);
+		}
+		else if (StrEqual(mapName, "testchmb_a_08_advanced") && checkedLocations.FindValue(66100) == -1) {
+			SendLocationCheckedCommand(apWebsocket, 66100);
+		}
+		else if (StrEqual(mapName, "testchmb_a_09") && checkedLocations.FindValue(66110) == -1) {
+			SendLocationCheckedCommand(apWebsocket, 66110);
+		}
+		else if (StrEqual(mapName, "testchmb_a_09_advanced") && checkedLocations.FindValue(66120) == -1) {
+			SendLocationCheckedCommand(apWebsocket, 66120);
+		}
+		else if (StrEqual(mapName, "testchmb_a_10") && checkedLocations.FindValue(66130) == -1) {
+			SendLocationCheckedCommand(apWebsocket, 66130);
+		}
+		else if (StrEqual(mapName, "testchmb_a_10_advanced") && checkedLocations.FindValue(66140) == -1) {
+			SendLocationCheckedCommand(apWebsocket, 66140);
+		}
+		else if (StrEqual(mapName, "testchmb_a_11") && checkedLocations.FindValue(66150) == -1) {
+			SendLocationCheckedCommand(apWebsocket, 66150);
+		}
+		else if (StrEqual(mapName, "testchmb_a_11_advanced") && checkedLocations.FindValue(66160) == -1) {
+			SendLocationCheckedCommand(apWebsocket, 66160);
+		}
+		else if (StrEqual(mapName, "testchmb_a_13") && checkedLocations.FindValue(66170) == -1) {
+			SendLocationCheckedCommand(apWebsocket, 66170);
+		}
+		else if (StrEqual(mapName, "testchmb_a_13_advanced") && checkedLocations.FindValue(66180) == -1) {
+			SendLocationCheckedCommand(apWebsocket, 66180);
+		}
+		else if (StrEqual(mapName, "testchmb_a_14") && checkedLocations.FindValue(66190) == -1) {
+			SendLocationCheckedCommand(apWebsocket, 66190);
+		}
+		else if (StrEqual(mapName, "testchmb_a_14_advanced") && checkedLocations.FindValue(66200) == -1) {
+			SendLocationCheckedCommand(apWebsocket, 66200);
+		}
+		else if (StrEqual(mapName, "testchmb_a_15") && checkedLocations.FindValue(66210) == -1) {
+			SendLocationCheckedCommand(apWebsocket, 66210);
+		}
+		else if (StrEqual(mapName, "escape_00") && checkedLocations.FindValue(66220) == -1) {
+			SendLocationCheckedCommand(apWebsocket, 66220);
+		}
+		else if (StrEqual(mapName, "escape_01") && checkedLocations.FindValue(66230) == -1) {
+			SendLocationCheckedCommand(apWebsocket, 66230);
+		}
+		else if (StrEqual(mapName, "escape_02") && checkedLocations.FindValue(66240) == -1) {
+			SendLocationCheckedCommand(apWebsocket, 66240);
+		}
+	}
+	SendDeathLinkCommand(attacker);
 }
