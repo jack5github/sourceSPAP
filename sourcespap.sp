@@ -16,15 +16,24 @@ public Plugin myinfo =	 // Variable must be called 'myinfo'
 	};
 
 // === Constants ===
-int				clientId = 1;
+int				clientId		 = 1;
+
+// Maximum size of a supported Source Engine game name, increase this and the below variables' sizes if needed
+// Strings must contain 1 extra character to be terminated
+int				gameNameSize = 7;
 
 char			gameFolderName[7];
+
+char			gameName[7];
 
 char			jsonConfigPath[41]	= "addons\\sourcemod\\configs\\sourcespap.json";
 
 char			cannotRunError[129] = "[sSPAP] sourceSPAP must be the only loaded plugin, move other .smx files in 'addons/sourcemod/plugins/' to 'disabled/' subfolder";
 
 // === Configuration & Websocket ===
+
+char			apProtocol[4]				= "ws";
+
 char			apDomain[32]				= "archipelago.gg";
 
 int				apPort							= 0;
@@ -52,7 +61,16 @@ char			expectedMapName[32] = "testchmb_a_10";
 // API Reference - https://www.sourcemod.net/new-api/
 public void OnPluginStart()
 {
+	PrintToServer("[sSPAP] Fetching game names");
 	GetGameFolderName(gameFolderName, sizeof(gameFolderName));
+	if (StrEqual(gameFolderName, "portal"))
+	{
+		gameName = "Portal";
+	}
+	else {
+		PrintToServer("[sSPAP] ERROR: Game folder name '%s' not implemented", gameFolderName);
+		return;
+	}
 
 	if (FileExists(jsonConfigPath))
 	{
@@ -60,6 +78,10 @@ public void OnPluginStart()
 		JSONObject jsonConfig = JSONObject.FromFile(jsonConfigPath);
 		if (jsonConfig != null)
 		{
+			if (jsonConfig.HasKey("protocol"))
+			{
+				jsonConfig.GetString("protocol", apProtocol, sizeof(apProtocol));
+			}
 			if (jsonConfig.HasKey("domain"))
 			{
 				jsonConfig.GetString("domain", apDomain, sizeof(apDomain));
@@ -86,6 +108,7 @@ public void OnPluginStart()
 
 	// Commands - https://wiki.alliedmods.net/Commands_(SourceMod_Scripting)
 	PrintToServer("[sSPAP] Creating commands");
+	RegServerCmd("sspap_protocol", Command_SetProtocol, "Get/set protocol of the Archipelago server");
 	RegServerCmd("sspap_domain", Command_SetDomain, "Get/set domain of the Archipelago server");
 	RegServerCmd("sspap_port", Command_SetPort, "Get/set port of the Archipelago server");
 	RegServerCmd("sspap_slot", Command_SetSlot, "Get/set slot name of the Archipelago player");
@@ -142,11 +165,12 @@ public void OnAllPluginsLoaded()
 void SaveConfig()
 {
 	JSONObject jsonConfig = new JSONObject();
+	jsonConfig.SetString("protocol", apProtocol);
 	jsonConfig.SetString("domain", apDomain);
 	jsonConfig.SetInt("port", apPort);
 	jsonConfig.SetString("slot", apSlot);
-	jsonConfig.SetBool("debug", debug);
 	// Password is not stored in the config for security reasons
+	jsonConfig.SetBool("debug", debug);	 // Required to preserve debug value
 	if (jsonConfig.ToFile(jsonConfigPath))
 	{
 		PrintToServer("[sSPAP] Saved config to '%s'", jsonConfigPath);
@@ -183,6 +207,22 @@ ArrayList GetEntityIndices()
 === Commands ===
 https://wiki.alliedmods.net/Commands_(SourceMod_Scripting)
 */
+
+// Sets the protocol of the Archipelago server.
+//
+// @param args The number of arguments.
+public Action Command_SetProtocol(int args)
+{
+	if (args <= 0)
+	{
+		PrintToServer("[sSPAP] Archipelago protocol is '%s'", apProtocol);
+		return Plugin_Continue;
+	}
+	GetCmdArgString(apProtocol, sizeof(apProtocol));
+	PrintToServer("[sSPAP] Archipelago protocol set to '%s'", apProtocol);
+	SaveConfig();
+	return Plugin_Continue;
+}
 
 // Sets the domain of the Archipelago server.
 //
@@ -252,14 +292,16 @@ public Action Command_Connect(int args)
 		PrintToServer(cannotRunError);
 		return Plugin_Continue;
 	}
-	char apWsDomain[64] = "ws://";
-	StrCat(apWsDomain, sizeof(apWsDomain), apDomain);
-	StrCat(apWsDomain, sizeof(apWsDomain), ":");
+	char apUrl[64];
+	strcopy(apUrl, sizeof(apUrl), apProtocol);
+	StrCat(apUrl, sizeof(apUrl), "://");
+	StrCat(apUrl, sizeof(apUrl), apDomain);
+	StrCat(apUrl, sizeof(apUrl), ":");
 	char apWsPort[6];
 	Format(apWsPort, sizeof(apWsPort), "%i", apPort);
-	StrCat(apWsDomain, sizeof(apWsDomain), apWsPort);
-	PrintToServer("[sSPAP] Connecting to Archipelago server at '%s'", apWsDomain);
-	apWebsocket = new WebSocket(apWsDomain, WebSocket_JSON);
+	StrCat(apUrl, sizeof(apUrl), apWsPort);
+	PrintToServer("[sSPAP] Connecting to Archipelago server at '%s'", apUrl);
+	apWebsocket = new WebSocket(apUrl, WebSocket_JSON);
 	apWebsocket.SetOpenCallback(Websocket_Open);
 	apWebsocket.SetCloseCallback(Websocket_Close);
 	apWebsocket.SetErrorCallback(Websocket_Error);
@@ -310,14 +352,126 @@ void Websocket_Error(WebSocket ws, char[] errMsg)
 	PrintToServer("[sSPAP] ERROR: Websocket error '%s'", errMsg);
 }
 
-void Websocket_Message(WebSocket ws, JSON message, int wireSize)
+// Reads a string array from JSON and returns it as an ArrayList.
+//
+// @param rootJson The JSON to read from. This JSON must be the root handle and not a scoped copy.
+// @param pointer The JSON pointer to the array. This is usually in the format '/key/nestedKey', with 0-indexed numbers being used for array indices.
+// @param pointerSize The size of the JSON pointer. It does not need to be large enough to fit the array indices.
+// @param maxDigits The maximum number of digits in the array indices. Defaults to 3.
+// @param stringSize The maximum size of the strings in the array. Defaults to 256.
+// @return The array of strings. This array will return empty if there is an error reading the array at the given pointer. Needs to be closed when no longer needed.
+ArrayList GetJSONStringArray(JSON rootJson, char[] pointer, int pointerSize, int maxDigits = 3, int stringSize = 256)
 {
-	// TODO: Interpret message from Archipelago server
+	if (debug)
+	{
+		PrintToServer("[sSPAP] Creating string array of JSON at pointer '%s'", pointer);
+	}
+	int scopedPointerSize = pointerSize + 1;	// Fit forward slash
+	char[] scopedPointer	= new char[scopedPointerSize];
+	strcopy(scopedPointer, scopedPointerSize, pointer);
+	StrCat(scopedPointer, scopedPointerSize, "/");
+	int i									 = 0;
+	int indexedPointerSize = scopedPointerSize + maxDigits;	 // Fit digits
+	char[] stringBuffer		 = new char[stringSize];
+	ArrayList stringArray	 = new ArrayList(stringSize);
+	while (i >= 0)	// Avoid reduntant test warning
+	{
+		char[] indexedPointer = new char[indexedPointerSize];
+		strcopy(indexedPointer, indexedPointerSize, scopedPointer);
+		char[] iStr = new char[maxDigits];
+		Format(iStr, maxDigits, "%i", i);
+		StrCat(indexedPointer, indexedPointerSize, iStr);
+		if (!rootJson.PtrTryGetString(indexedPointer, stringBuffer, stringSize))
+		{
+			if (debug)
+			{
+				PrintToServer("[sSPAP] JSON item '%s' does not exist", indexedPointer);
+			}
+			break;
+		}
+		rootJson.PtrGetString(indexedPointer, stringBuffer, stringSize);
+		if (debug)
+		{
+			PrintToServer("[sSPAP] JSON item '%s' is '%s'", indexedPointer, stringBuffer);
+		}
+		stringArray.PushString(stringBuffer);
+		i++;
+	}
+	if (debug)
+	{
+		PrintToServer("[sSPAP] Array length is %i", stringArray.Length);
+		for (int j = 0; j < stringArray.Length; j++)
+		{
+			stringArray.GetString(j, stringBuffer, stringSize);
+			PrintToServer("[sSPAP] Array item %i is '%s'", j, stringBuffer);
+		}
+	}
+	return stringArray;
+}
+
+// Receives a message from the Archipelago server.
+//
+// @param ws The WebSocket connection to the Archipelago server.
+// @param message The message from the Archipelago server, typically an ordered list of network commands.
+// @param wireSize The size of the message.
+void Websocket_Message(WebSocket ws, const JSONArray message, int wireSize)
+{
 	if (debug)
 	{
 		char messageString[1024];
 		message.ToString(messageString, sizeof(messageString));
-		PrintToServer("[sSPAP] Received message from Archipelago server: %s", messageString);
+		PrintToServer("[sSPAP] Received packet from Archipelago server: '%s'", messageString);
+	}
+	if (!message.IsArray)
+	{
+		PrintToServer("[sSPAP] ERROR: Non-array packet");
+		return;
+	}
+	for (int i = 0; i < message.Length; i++)
+	{
+		JSONObject command = message.Get(i);
+		if (!command.IsObject)
+		{
+			PrintToServer("[sSPAP] ERROR: Non-object command %i", i);
+			continue;
+		}
+		char cmd[18];
+		command.GetString("cmd", cmd, sizeof(cmd));
+		if (debug)
+		{
+			PrintToServer("[sSPAP] Command %i is a '%s'", i, cmd);
+		}
+		if (StrEqual(cmd, "RoomInfo"))
+		{
+			// After connecting, server accepts connection and responds with a RoomInfo packet
+			char pointer[9];
+			Format(pointer, sizeof(pointer), "/%i/games", i);
+			// Archipelago multiworlds usually do not exceed 999 games
+			// Only need enough characters to fit the longest Source Engine game name
+			ArrayList games			= GetJSONStringArray(message, pointer, sizeof(pointer), 3, gameNameSize);
+			bool			gameFound = false;
+			for (int j = 0; j < games.Length; j++)
+			{
+				char jsonGameName[64];
+				games.GetString(j, jsonGameName, sizeof(jsonGameName));
+				if (StrEqual(jsonGameName, gameName))
+				{
+					gameFound = true;
+					break;
+				}
+			}
+			games.Close();
+			if (!gameFound)
+			{
+				PrintToServer("[sSPAP] ERROR: Game '%s' not listed on Archipelago server", gameName);
+			}
+			// TODO: Finish connecting
+		}
+		else {
+			// TODO: Implement other commands
+			PrintToServer("[sSPAP] ERROR: Command '%s' not implemented", cmd);
+		}
+		command.Close();
 	}
 }
 
