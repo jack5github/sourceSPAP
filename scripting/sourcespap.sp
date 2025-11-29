@@ -42,8 +42,6 @@ bool			shouldKillWeapons = false;
 int				killWeaponsFrames = 0;
 ArrayList checkedLocations;
 ArrayList unlockedItems;
-// The map Archipelago is expecting the client to be on. If the client is not on this map before they spawn, the server will switch to this map. This appears as the map loading twice, but on modern hardware this is negligible.
-char			expectedMapName[32] = "testchmb_a_10";
 
 // API Reference - https://www.sourcemod.net/new-api/
 public void OnPluginStart()
@@ -533,6 +531,16 @@ void Websocket_Message(WebSocket ws, const JSONArray message, int wireSize)
 				PrintToServer("[sSPAP] '%s'", text);
 			}
 		}
+		else if (StrEqual(cmd, "RoomUpdate")) {
+			JSONArray jsonCheckedLocations = command.Get("checked_locations");
+			for (int j = 0; j < jsonCheckedLocations.Length; j++)
+			{
+				int locationId = jsonCheckedLocations.GetInt(j);
+				PrintToServer("[sSPAP] Check for location %i registered by server", locationId);
+				checkedLocations.Push(locationId);
+			}
+			jsonCheckedLocations.Close();
+		}
 		else if (StrEqual(cmd, "InvalidPacket")) {
 			char text[1024];
 			command.GetString("text", text, sizeof(text));
@@ -607,7 +615,7 @@ void SendConnectCommand(WebSocket ws, bool passwordRequired)
 // @param locationId The ID of the location the client has checked.
 void SendLocationCheckedCommand(WebSocket ws, int locationId)
 {
-	if (checkedLocations.FindValue(i) != -1)
+	if (checkedLocations.FindValue(locationId) != -1)
 	{
 		if (debug)
 		{
@@ -678,11 +686,11 @@ bool EvaluateMap(bool changeMap = false)
 	}
 	// TODO: Manage maps as unlocks
 	/*
-	if (!StrEqual(mapName, expectedMapName))
+	if (!StrEqual(mapName, ...))
 	{
 		PrintToServer("[sSPAP] Map does not match map expected by sSPAP");
 		if (!changeMap) return false;
-		ForceChangeLevel(expectedMapName, "Map does not match map expected by sSPAP");
+		ForceChangeLevel(..., "Map does not match map expected by sSPAP");
 		return false;
 	}
 	*/
@@ -735,7 +743,7 @@ public Action Event_PostSpawn(Event event, const char[] name, bool dontBroadcast
 	// Test of teleporting player, player does not pick up items nor activate triggers located at spawn
 	char mapName[32];
 	GetCurrentMap(mapName, sizeof(mapName));
-	if (StrEqual(mapName, expectedMapName))
+	if (StrEqual(mapName, "testchmb_a_10"))
 	{
 		TeleportEntitiesByName("!player", { -889.87, -2753.50, -191.97 });
 	}
