@@ -4,6 +4,7 @@
 // Portal does not support <sdktools_functions> methods
 #include <websocket>
 
+// Strings must contain 1 extra character to be terminated
 public char thisPluginName[11] = "sourceSPAP";
 
 public Plugin myinfo =	 // Variable must be called 'myinfo'
@@ -16,9 +17,6 @@ public Plugin myinfo =	 // Variable must be called 'myinfo'
 	};
 
 // === Constants ===
-// Maximum size of a supported Source Engine game name, increase this and the below variables' sizes if needed
-// Strings must contain 1 extra character to be terminated
-int				gameNameSize = 7;
 char			gameFolderName[7];
 char			gameName[7];
 char			jsonConfigPath[41]	= "addons\\sourcemod\\configs\\sourcespap.json";
@@ -373,13 +371,17 @@ void Websocket_Error(WebSocket ws, char[] errMsg)
 // @param pointer The JSON pointer to the array. This is usually in the format '/key/nestedKey', with 0-indexed numbers being used for array indices.
 // @param pointerSize The size of the JSON pointer. It does not need to be large enough to fit the array indices.
 // @param maxDigits The maximum number of digits in the array indices. Defaults to 3.
-// @param stringSize The maximum size of the strings in the array. Defaults to 256.
+// @param stringSize The maximum size of all strings in the array. If this is not high enough, the reading will fail early. Defaults to 64.
 // @return The array of strings. This array will return empty if there is an error reading the array at the given pointer. Needs to be closed when no longer needed.
-ArrayList GetJSONStringArray(JSON rootJson, char[] pointer, int pointerSize, int maxDigits = 3, int stringSize = 256)
+ArrayList GetJSONStringArray(JSON rootJson, char[] pointer, int pointerSize, int maxDigits = 3, int stringSize = 64)
 {
 	if (debug)
 	{
-		PrintToServer("[sSPAP] Creating string array of JSON at pointer '%s'", pointer);
+		char pointerJsonStr[1024];
+		JSON pointerJson = rootJson.PtrGet(pointer);
+		pointerJson.ToString(pointerJsonStr, sizeof(pointerJsonStr));
+		PrintToServer("[sSPAP] Creating string array of JSON at pointer '%s': %s", pointer, pointerJsonStr);
+		pointerJson.Close();
 	}
 	int scopedPointerSize = pointerSize + 1;	// Fit forward slash
 	char[] scopedPointer	= new char[scopedPointerSize];
@@ -400,7 +402,7 @@ ArrayList GetJSONStringArray(JSON rootJson, char[] pointer, int pointerSize, int
 		{
 			if (debug)
 			{
-				PrintToServer("[sSPAP] JSON item '%s' does not exist", indexedPointer);
+				PrintToServer("[sSPAP] JSON item '%s' does not exist or string size buffer is too small", indexedPointer);
 			}
 			break;
 		}
@@ -463,8 +465,7 @@ void Websocket_Message(WebSocket ws, const JSONArray message, int wireSize)
 			char pointer[9];
 			Format(pointer, sizeof(pointer), "/%i/games", i);
 			// Archipelago multiworlds usually do not exceed 999 games
-			// Only need enough characters to fit the longest Source Engine game name
-			ArrayList games			= GetJSONStringArray(message, pointer, sizeof(pointer), 3, gameNameSize);
+			ArrayList games			= GetJSONStringArray(message, pointer, sizeof(pointer), 3);
 			bool			gameFound = false;
 			for (int j = 0; j < games.Length; j++)
 			{
@@ -606,16 +607,13 @@ void SendConnectCommand(WebSocket ws, bool passwordRequired)
 // @param locationId The ID of the location the client has checked.
 void SendLocationCheckedCommand(WebSocket ws, int locationId)
 {
-	for (int i = 0; i < checkedLocations.Length; i++)
+	if (checkedLocations.FindValue(i) != -1)
 	{
-		if (checkedLocations.Get(i) == locationId)
+		if (debug)
 		{
-			if (debug)
-			{
-				PrintToServer("[sSPAP] Location %i already checked, not sending", locationId);
-			}
-			return;
+			PrintToServer("[sSPAP] Location %i already checked, not sending", locationId);
 		}
+		return;
 	}
 	PrintToServer("[sSPAP] Marking location %i as checked", locationId);
 	JSONObject locationChecksCommand = new JSONObject();
