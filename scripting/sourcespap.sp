@@ -30,6 +30,7 @@ char			apSlot[32]					= "";
 char			apPassword[32]			= "";
 // Whether debug mode is enabled, can only be set by manually editing the config.
 bool			debug								= false;
+// TODO: Reconnect if websocket handle is invalid, store everything that needs to be sent in a queue
 WebSocket apWebsocket;
 int				apSlotNo;
 
@@ -383,8 +384,7 @@ ArrayList GetJSONStringArray(JSON rootJson, char[] pointer, int pointerSize, int
 	}
 	int scopedPointerSize = pointerSize + 1;	// Fit forward slash
 	char[] scopedPointer	= new char[scopedPointerSize];
-	strcopy(scopedPointer, scopedPointerSize, pointer);
-	StrCat(scopedPointer, scopedPointerSize, "/");
+	Format(scopedPointer, scopedPointerSize, "%s/", pointer);
 	int i									 = 0;
 	int indexedPointerSize = scopedPointerSize + maxDigits;	 // Fit digits
 	char[] stringBuffer		 = new char[stringSize];
@@ -392,10 +392,7 @@ ArrayList GetJSONStringArray(JSON rootJson, char[] pointer, int pointerSize, int
 	while (i >= 0)	// Avoid reduntant test warning
 	{
 		char[] indexedPointer = new char[indexedPointerSize];
-		strcopy(indexedPointer, indexedPointerSize, scopedPointer);
-		char[] iStr = new char[maxDigits];
-		Format(iStr, maxDigits, "%i", i);
-		StrCat(indexedPointer, indexedPointerSize, iStr);
+		Format(indexedPointer, indexedPointerSize, "%s%i", scopedPointer, i);
 		if (!rootJson.PtrTryGetString(indexedPointer, stringBuffer, stringSize))
 		{
 			if (debug)
@@ -422,6 +419,52 @@ ArrayList GetJSONStringArray(JSON rootJson, char[] pointer, int pointerSize, int
 		}
 	}
 	return stringArray;
+}
+
+// Converts the array of objects from the Archipelago server PrintJSON command to a string.
+//
+// @param rootJson The JSON to read from. This JSON must be the root handle and not a scoped copy.
+// @param messageIndex The index of the message to convert.
+// @param buffer The buffer to write the string to.
+// @param bufferSize The size of the buffer.
+void ArchipelagoJSONToString(JSON rootJson, int messageIndex, char[] buffer, int bufferSize)
+{
+	char dataPointer[9];
+	Format(dataPointer, sizeof(dataPointer), "/%i/data/", messageIndex);
+	int i									 = 0;
+	int indexedPointerSize = sizeof(dataPointer) + 6;
+	int apStringSize			 = 256;
+	char[] apString				 = new char[apStringSize];
+	Format(buffer, bufferSize, "");
+	while (i >= 0)	// Avoid reduntant test warning
+	{
+		char apStringType[10] = "text";
+		char[] indexedPointer = new char[indexedPointerSize];
+		Format(indexedPointer, indexedPointerSize, "%s%i/type", dataPointer, i);
+		// Populate string type for later use
+		rootJson.PtrTryGetString(indexedPointer, apStringType, sizeof(apStringType));
+		// No need to use PtrGetString(), PtrTryGetString() does the job
+		Format(indexedPointer, indexedPointerSize, "%s%i/text", dataPointer, i);
+		if (!rootJson.PtrTryGetString(indexedPointer, apString, apStringSize))
+		{
+			if (debug)
+			{
+				PrintToServer("[sSPAP] JSON item '%s' does not exist or string size buffer is too small", indexedPointer);
+			}
+			break;
+		}
+		// TODO: Convert player and item IDs into names
+		/*
+		if (StrEqual(apStringType, "player_id")) {}
+		else if (StrEqual(apStringType, "item_id")) {}
+		*/
+		if (debug)
+		{
+			PrintToServer("[sSPAP] JSON item '%s' is '%s'", indexedPointer, apString);
+		}
+		StrCat(buffer, bufferSize, apString);
+		i++;
+	}
 }
 
 // Receives a message from the Archipelago server.
@@ -518,18 +561,9 @@ void Websocket_Message(WebSocket ws, const JSONArray message, int wireSize)
 			receivedItems.Close();
 		}
 		else if (StrEqual(cmd, "PrintJSON")) {
-			char pointer[15];
-			Format(pointer, sizeof(pointer), "/%i/data/0/text", i);
 			char text[1024];
-			if (!command.PtrTryGetString(pointer, text, sizeof(text)))
-			{
-				PrintToServer("[sSPAP] ERROR: PrintJSON packet missing text");
-			}
-			else {
-				// No need to use PtrGetString(), PtrTryGetString() does the job
-				// TODO: Create entities to display this text on screen
-				PrintToServer("[sSPAP] '%s'", text);
-			}
+			ArchipelagoJSONToString(message, i, text, sizeof(text));
+			PrintToServer("[sSPAP] '%s'", text);
 		}
 		else if (StrEqual(cmd, "RoomUpdate")) {
 			JSONArray jsonCheckedLocations = command.Get("checked_locations");
@@ -667,6 +701,7 @@ int GetClientId()
 			return i;
 		}
 	}
+	// TODO: Fix this failing even when searching through all possible clients
 	PrintToServer("[sSPAP] ERROR: Could not find client ID");
 	return 0;
 }
@@ -740,7 +775,7 @@ public Action Event_PostSpawn(Event event, const char[] name, bool dontBroadcast
 	{
 		return Plugin_Continue;
 	}
-	// Test of teleporting player, player does not pick up items nor activate triggers located at spawn
+	// TEMP: Teleports player, player does not pick up items nor activate triggers located at spawn
 	char mapName[32];
 	GetCurrentMap(mapName, sizeof(mapName));
 	if (StrEqual(mapName, "testchmb_a_10"))
@@ -848,6 +883,7 @@ public void Event_Hurt(Event event, const char[] name, bool dontBroadcast)
 	// TODO: Send DeathLink conditionally
 }
 
+// TODO: Fix this function not firing when the client dies
 // Fires when the client dies. This is intended to be used to fire DeathLink events to the Archipelago server. If being hurt also triggers DeathLink, this event uses the same delay system as Event_Hurt().
 public void Event_Dead(Event event, const char[] name, bool dontBroadcast)
 {
