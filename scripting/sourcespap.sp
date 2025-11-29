@@ -5,16 +5,22 @@
 #include <websocket>
 
 // Strings must contain 1 extra character to be terminated
-public char thisPluginName[11] = "sourceSPAP";
+
+// === Plugin Info ===
+public char myName[11] = "sourceSPAP";
+
+public char myVersion[6] = "0.0.0";
 
 public Plugin myinfo =	 // Variable must be called 'myinfo'
 	{
-		name				= thisPluginName,
+		name				= myName,
 		author			= "Jack5",
 		description = "source Single Player Archipelago Plugin",
-		version			= "0.0.0",
+		version			= myVersion,
 		url					= "https://github.com/jack5github/sourceSPAP"
 	};
+// Used in client tags, must have `sizeof(myName) + sizeof(myVersion)` number of characters
+char			myNameVersion[17];
 
 // === Constants ===
 char			gameFolderName[7];
@@ -47,6 +53,7 @@ ArrayList unlockedItems;
 // API Reference - https://www.sourcemod.net/new-api/
 public void OnPluginStart()
 {
+	Format(myNameVersion, sizeof(myNameVersion), "%s-%s", myName, myVersion);
 	checkedLocations = new ArrayList();
 	unlockedItems		 = new ArrayList();
 
@@ -138,7 +145,9 @@ public void OnAllPluginsLoaded()
 	{
 		char pluginName[32];
 		GetPluginInfo(iter.Plugin, PlInfo_Name, pluginName, sizeof(pluginName));
-		if (!StrEqual(pluginName, thisPluginName))
+		char pluginVersion[16];
+		GetPluginInfo(iter.Plugin, PlInfo_Version, pluginVersion, sizeof(pluginVersion));
+		if (!StrEqual(pluginName, myName) || !StrEqual(pluginVersion, myVersion))
 		{
 			shouldRun = false;
 			PrintToServer(cannotRunError);
@@ -625,6 +634,7 @@ void SendConnectCommand(WebSocket ws, bool passwordRequired)
 	*/
 	connectCommand.SetInt("items_handling", 7);
 	JSONArray connectTags = new JSONArray();
+	connectTags.PushString(myNameVersion);
 	connectTags.PushString("DeathLink");	// sourceSPAP supports DeathLink
 	connectCommand.Set("tags", connectTags);
 	connectCommand.SetBool("slot_data", true);
