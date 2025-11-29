@@ -389,7 +389,7 @@ ArrayList GetJSONStringArray(JSON rootJson, char[] pointer, int pointerSize, int
 			}
 			break;
 		}
-		rootJson.PtrGetString(indexedPointer, stringBuffer, stringSize);
+		// No need to use PtrGetString(), PtrTryGetString() does the job
 		if (debug)
 		{
 			PrintToServer("[sSPAP] JSON item '%s' is '%s'", indexedPointer, stringBuffer);
@@ -433,6 +433,7 @@ void Websocket_Message(WebSocket ws, const JSONArray message, int wireSize)
 		if (!command.IsObject)
 		{
 			PrintToServer("[sSPAP] ERROR: Non-object command %i", i);
+			command.Close();
 			continue;
 		}
 		char cmd[18];
@@ -465,14 +466,95 @@ void Websocket_Message(WebSocket ws, const JSONArray message, int wireSize)
 			{
 				PrintToServer("[sSPAP] ERROR: Game '%s' not listed on Archipelago server", gameName);
 			}
-			// TODO: Finish connecting
+			else {
+				bool passwordRequired = command.GetBool("password");
+				SendConnectCommand(ws, passwordRequired);
+			}
 		}
-		else {
+		else if (StrEqual(cmd, "Connected")) {
+			PrintToServer("[sSPAP] Connected to Archipelago server");
+			// TODO: Extract information from connected message
+			shouldRun = true;
+		}
+		else if (StrEqual(cmd, "PrintJSON")) {
+			char pointer[15];
+			Format(pointer, sizeof(pointer), "/%i/data/0/text", i);
+			char text[1024];
+			if (!command.PtrTryGetString(pointer, text, sizeof(text)))
+			{
+				PrintToServer("[sSPAP] ERROR: PrintJSON packet missing text");
+			}
+			else {
+				// No need to use PtrGetString(), PtrTryGetString() does the job
+				// TODO: Create entities to display this text on screen
+				PrintToServer("[sSPAP] '%s'", text);
+			}
+		}
+		else if (StrEqual(cmd, "InvalidPacket")) {
+			char text[1024];
+			command.GetString("text", text, sizeof(text));
+			PrintToServer("[sSPAP] ERROR: Invalid packet: %s", text);
+		}
+		else
+		{
 			// TODO: Implement other commands
 			PrintToServer("[sSPAP] ERROR: Command '%s' not implemented", cmd);
 		}
 		command.Close();
 	}
+}
+
+// Sends the Connect command to the Archipelago server, documented here: https://github.com/ArchipelagoMW/Archipelago/blob/main/docs/network%20protocol.md#connect
+//
+// @param ws The WebSocket connection to the Archipelago server.
+// @param passwordRequired Whether the Archipelago server requires a password.
+void SendConnectCommand(WebSocket ws, bool passwordRequired)
+{
+	PrintToServer("[sSPAP] Sending Connect command");
+	JSONObject connectCommand = new JSONObject();
+	connectCommand.SetString("cmd", "Connect");
+	if (passwordRequired)
+	{
+		connectCommand.SetString("password", apPassword);
+	}
+	else {	// All fields are required, send empty string
+		connectCommand.SetString("password", "");
+	}
+	connectCommand.SetString("game", gameName);
+	connectCommand.SetString("name", apSlot);
+	// TODO: Get uuid from Windows file `%localappdata%/Archipelago/Cache/common.json` or Linux file `~/.cache/Archipelago/Cache/common.json`, sending empty string for now
+	connectCommand.SetString("uuid", "");
+	JSONObject connectVersion = new JSONObject();
+	connectVersion.SetString("class", "Version");
+	connectVersion.SetString("build", "0");
+	connectVersion.SetString("major", "6");
+	connectVersion.SetString("minor", "4");
+	connectCommand.Set("version", connectVersion);
+	/*
+	items_handling uses a flags system:
+	- 1: Items are sent from other worlds (games)
+	- 2: Items are sent from this world
+	- 4: This world has a starting inventory
+	sourceSPAP must allow all three flags, therefore 4 + 2 + 1 = 7
+	*/
+	connectCommand.SetInt("items_handling", 7);
+	JSONArray connectTags = new JSONArray();
+	connectTags.PushString("DeathLink");	// sourceSPAP supports DeathLink
+	connectCommand.Set("tags", connectTags);
+	connectCommand.SetBool("slot_data", true);
+	JSONArray commandArray = new JSONArray();
+	commandArray.Push(connectCommand);
+	if (debug)
+	{
+		char commandArrayString[1024];
+		commandArray.ToString(commandArrayString, sizeof(commandArrayString));
+		PrintToServer("[sSPAP] Sending JSON '%s'", commandArrayString);
+	}
+	ws.WriteJSON(commandArray);
+	connectVersion.Close();
+	connectTags.Close();
+	connectCommand.Close();
+	commandArray.Close();
 }
 
 /*
@@ -487,10 +569,11 @@ event.GetString("userid", userid, sizeof(userid));
 ```
 */
 
-// First checks if the current map is a background map, and if so, exits early so no logic is run on it. Then checks if the current map is the expected map, and if not, changes the map to it. This should only be run after checking shouldRun to avoid console spam.
+// First checks if the current map is a background map, and if so, exits early so no logic is run on it. Then checks if the current map is the expected map, and if not, optionally changes the map to it. This should only be run after checking shouldRun to avoid console spam.
 //
+// @param changeMap Whether to change the map if the current map is not the expected map. Defaults to false.
 // @returns Whether the current map is the expected map.
-bool EvaluateMap()
+bool EvaluateMap(bool changeMap = false)
 {
 	char mapName[32];
 	GetCurrentMap(mapName, sizeof(mapName));
@@ -499,8 +582,11 @@ bool EvaluateMap()
 		PrintToServer("[sSPAP] Not evaluating background map, likely on main menu");
 		return false;
 	}
+	// TODO: Manage maps as unlocks
 	if (!StrEqual(mapName, expectedMapName))
 	{
+		PrintToServer("[sSPAP] Map does not match map expected by sSPAP");
+		if (!changeMap) return false;
 		ForceChangeLevel(expectedMapName, "Map does not match map expected by sSPAP");
 		return false;
 	}
@@ -529,7 +615,7 @@ public Action Event_PreSpawn(Event event, const char[] name, bool dontBroadcast)
 		return Plugin_Continue;
 	}
 	PrintToServer("[sSPAP] Client is spawning");
-	if (!EvaluateMap())
+	if (!EvaluateMap(true))
 	{
 		return Plugin_Continue;
 	}
